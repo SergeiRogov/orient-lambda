@@ -213,6 +213,24 @@ class FinishScores:
             top_scores = sorted_scores[:self.num_of_events_considered]
             return sum(top_scores)
 
+        def get_color(score):
+            color_ranges = [
+                {'min': 0, 'max': 20, 'color': 'f73333'},  # Lowest performance (red)
+                {'min': 20, 'max': 30, 'color': 'ff5c23'},
+                {'min': 30, 'max': 40, 'color': 'ff7e0c'},
+                {'min': 40, 'max': 50, 'color': 'ff9f00'},
+                {'min': 50, 'max': 60, 'color': 'ffbe00'},
+                {'min': 60, 'max': 70, 'color': 'ffdc00'},
+                {'min': 70, 'max': 80, 'color': 'dddf00'},
+                {'min': 80, 'max': 90, 'color': 'b7e100'},
+                {'min': 90, 'max': 95, 'color': '8ae100'},
+                {'min': 95, 'max': 100, 'color': '4be116'},  # Best performance (green)
+            ]
+            for color_range in color_ranges:
+                if color_range['min'] < score <= color_range['max']:
+                    return PatternFill(start_color=color_range['color'], end_color=color_range['color'], fill_type="solid")
+            return None
+
         df['Total'] = df.apply(_calculate_scores, axis=1)
         df = df.sort_values(by='Total', ascending=False)
         df['Position'] = df['Total'].rank(method='min', ascending=False).astype(int)
@@ -227,10 +245,7 @@ class FinishScores:
         name_column_letter = 'B'
         sheet.column_dimensions[name_column_letter].width = 25
 
-        highlight_fill = PatternFill(start_color='FFCCCC', end_color='FFCCCC', fill_type='solid')  # Light red color
-        top_fill_1 = PatternFill(start_color='4be116', end_color='4be116', fill_type='solid')  # First place
-        top_fill_2 = PatternFill(start_color='CCFFCC', end_color='CCFFCC', fill_type='solid')  # Second place
-        top_fill_3 = PatternFill(start_color='CCFFCC', end_color='CCFFCC', fill_type='solid')  # Third place
+        dropped_score_font = Font(strike=True)
 
         thin_border = Border(left=Side(style='thin'),
                              right=Side(style='thin'),
@@ -275,13 +290,6 @@ class FinishScores:
                     break
 
             for cell in col_cells:
-                if cell.value == top_3_scores[0]:
-                    cell.fill = top_fill_1
-                elif len(top_3_scores) > 1 and cell.value == top_3_scores[1]:
-                    cell.fill = top_fill_2
-                elif len(top_3_scores) > 2 and cell.value == top_3_scores[2]:
-                    cell.fill = top_fill_3
-
                 if cell.value == 100:
                     cell.font = bold_font
 
@@ -290,8 +298,10 @@ class FinishScores:
             sorted_scores = sorted([score for score in scores if score is not None], reverse=True)
             top_scores = set(sorted_scores[:self.num_of_events_considered])
             for cell in row:
-                if cell.value and cell.value not in top_scores:
-                    cell.fill = highlight_fill
+                if cell.value is not None:
+                    cell.fill = get_color(cell.value)
+                    if cell.value not in top_scores:
+                        cell.font = dropped_score_font
 
         book.save(FinishScores.FILE_NAME)
 
