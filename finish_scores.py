@@ -243,7 +243,7 @@ class FinishScores:
         sheet = book[self.year]
 
         name_column_letter = 'B'
-        sheet.column_dimensions[name_column_letter].width = 25
+        sheet.column_dimensions[name_column_letter].width = 27
 
         dropped_score_font = Font(strike=True)
 
