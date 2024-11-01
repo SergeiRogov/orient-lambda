@@ -50,12 +50,126 @@ def convert_to_str(total_seconds):
     return f"{total_seconds // 60:02}:{total_seconds % 60:02}"
 
 
+def fill_missing_splits_with_proportional_ratio(all_courses_runners):
+    for course_index, runners in enumerate(all_courses_runners):
+        for runner_index, runner in enumerate(runners):
+            splits = runner['splits']
+            missing_ranges = find_consecutive_missing_ranges(splits)
+
+            for start, end in missing_ranges:
+                if start == 0:
+                    # Missing splits are at the beginning
+                    all_courses_runners[course_index][runner_index]['splits'][start:end + 1] = estimate_start_gap(
+                        runners, splits, end)
+                elif end == len(splits) - 1:
+                    # Missing splits are at the end
+                    if runner['overall_time'] != "DNF":
+                        all_courses_runners[course_index][runner_index]['splits'][-1] = runner['overall_time']
+                        if start < end:
+                            all_courses_runners[course_index][runner_index]['splits'][start:end] = estimate_middle_gap(
+                                runners, splits, start, end - 1)
+                else:
+                    # Missing splits in the middle
+                    all_courses_runners[course_index][runner_index]['splits'][start:end + 1] = estimate_middle_gap(
+                        runners, splits, start, end)
+
+
+def find_consecutive_missing_ranges(splits):
+    missing_ranges = []
+    start = None
+
+    for i, split in enumerate(splits):
+        if split in ["----", "00:00"]:
+            if start is None:
+                start = i
+        elif start is not None:
+            missing_ranges.append((start, i - 1))
+            start = None
+
+    if start is not None:
+        missing_ranges.append((start, len(splits) - 1))
+
+    return missing_ranges
+
+
+def estimate_start_gap(runners, splits, end):
+    next_split_time = convert_to_seconds(splits[end + 1])
+    ratios = calculate_best_ratios(runners, 0, end + 1)
+    return proportional_interpolation(ratios, next_split_time=next_split_time)
+
+
+def estimate_middle_gap(runners, splits, start, end):
+    if start > end:
+        return
+    prev_split_time = convert_to_seconds(splits[start - 1])
+    next_split_time = convert_to_seconds(splits[end + 1])
+    ratios = calculate_best_ratios(runners, start, end)
+    return proportional_interpolation(ratios, prev_split_time=prev_split_time,
+                                      next_split_time=next_split_time)
+
+
+def calculate_best_ratios(runners, start, end):
+    if start > end:
+        return
+
+    leg_times = []
+    total_best_time = 0
+
+    for i in range(start - 1, end + 1):
+        if i < 0 or i + 1 >= len(runners[0]['splits']):  # Skip out-of-bounds indices
+            continue
+
+        best_time = float('inf')
+        for runner in runners:
+            splits = runner['splits']
+
+            # Check that both splits at i and i+1 exist and are not missing
+            if i + 1 < len(splits) and splits[i] != "----" and splits[i + 1] != "----":
+                time_diff = convert_to_seconds(splits[i + 1]) - convert_to_seconds(splits[i])
+                best_time = min(best_time, time_diff)
+
+        # If a valid best time is found, add it to leg_times and accumulate total time
+        if best_time != float('inf'):
+            leg_times.append(best_time)
+            total_best_time += best_time
+
+    # Calculate ratios for each leg relative to the total best time
+    return [leg_time / total_best_time for leg_time in leg_times] if total_best_time > 0 else []
+
+
+def proportional_interpolation(ratios, prev_split_time=None, next_split_time=None):
+    interpolated_splits = []
+
+    if prev_split_time is not None and next_split_time is not None:
+        # Calculate proportional times between the known boundaries
+        total_gap_time = next_split_time - prev_split_time
+        for i, ratio in enumerate(ratios[:-1]):
+            interpolated_split = prev_split_time + round(total_gap_time * sum(ratios[:i + 1]))
+            interpolated_splits.append(convert_to_str(interpolated_split))
+    else:
+        # Estimate backwards from prev known split if only start boundary is available
+        total_gap_time = prev_split_time
+        for i, ratio in enumerate(ratios[:-1]):
+            interpolated_split = prev_split_time + round(total_gap_time * sum(ratios[:i + 1]))
+            interpolated_splits.append(convert_to_str(interpolated_split))
+
+    return interpolated_splits
+
+
+def split_key(obj):
+    return obj.get('split', float('inf'))  # Use float('inf') if 'split' key is missing
+
+
+def cumul_key(obj):
+    return obj.get('cumulative', float('inf'))  # Use float('inf') if 'cumul' key is missing
+
+
 def lambda_handler(event, context):
     try:
         print('event:', json.dumps(event))
         # Extract the file name from the query parameters
         file = event['queryStringParameters']['file_to_retrieve']
-        # file = 'Piale Pasha 4 Aug 2024 splits.html'
+        # file = 'splits Ineia 27 Oct 2024.html'
         parsed_object_file = file.replace('.html', '.json')
 
         # Check if the parsed object file already exists in S3
@@ -253,60 +367,7 @@ def lambda_handler(event, context):
 
             splits = []
 
-            for course_index in range(len(all_courses_runners)):
-                for runner_index in range(len(all_courses_runners[course_index])):
-                    splits_copy = all_courses_runners[course_index][runner_index]['splits']
-                    for control_index in range(len(splits_copy)):
-                        if splits_copy[control_index] == "----" or splits_copy[control_index] == "00:00":
-                            all_courses_runners[course_index][runner_index]['splits'][control_index] = "----"
-                            runners = all_courses_runners[course_index]
-                            if control_index == 0:
-                                # Sort the runners based on the split time at the specified index
-                                sorted_runners_1 = sorted(runners,
-                                                          key=lambda x: convert_to_seconds(x['splits'][0]) if (
-                                                                      0 < len(x['splits']) and x['splits'][
-                                                                  0] != '----') else float('inf'))
-                                sorted_runners_2 = sorted(runners,
-                                                          key=lambda x: convert_to_seconds(
-                                                              x['splits'][1]) - convert_to_seconds(x['splits'][0]) if (
-                                                                      1 < len(x['splits']) and x['splits'][
-                                                                  0] != '----') else float('inf'))
-
-                                ratio = convert_to_seconds(sorted_runners_1[0]['splits'][0]) / (convert_to_seconds(
-                                    sorted_runners_2[0]['splits'][1]) - convert_to_seconds(
-                                    sorted_runners_2[0]['splits'][0]))
-                                next_split = convert_to_seconds(splits_copy[1])
-                                new_split = convert_to_str(round((next_split * ratio) / (1 + ratio)))
-
-                            elif control_index == len(splits) - 1:
-                                new_split = all_courses_runners[course_index][runner_index]['overall_time']
-                            else:
-                                sorted_runners_1 = sorted(runners, key=lambda x: convert_to_seconds(
-                                    x['splits'][control_index]) - convert_to_seconds(
-                                    x['splits'][control_index - 1]) if (
-                                            control_index < len(x['splits']) and x['splits'][
-                                        control_index] != '----') else float(
-                                    'inf'))
-                                sorted_runners_2 = sorted(runners, key=lambda x: convert_to_seconds(
-                                    x['splits'][control_index + 1]) - convert_to_seconds(
-                                    x['splits'][control_index]) if (
-                                            control_index + 1 < len(x['splits']) and x['splits'][
-                                        control_index] != '----') else float('inf'))
-
-                                best_prev_to_cur = convert_to_seconds(
-                                    sorted_runners_1[0]['splits'][control_index]) - convert_to_seconds(
-                                    sorted_runners_1[0]['splits'][control_index - 1])
-                                best_cur_to_next = convert_to_seconds(
-                                    sorted_runners_2[0]['splits'][control_index + 1]) - convert_to_seconds(
-                                    sorted_runners_2[0]['splits'][control_index])
-
-                                ratio = best_prev_to_cur / best_cur_to_next
-
-                                prev_split = convert_to_seconds(splits_copy[control_index - 1])
-                                next_split = convert_to_seconds(splits_copy[control_index + 1])
-                                new_split = convert_to_str(round((next_split * ratio + prev_split) / (1 + ratio)))
-
-                            all_courses_runners[course_index][runner_index]['splits'][control_index] = new_split
+            fill_missing_splits_with_proportional_ratio(all_courses_runners)
 
             for course_index in range(len(all_courses_runners)):
                 course_splits = []
@@ -345,12 +406,6 @@ def lambda_handler(event, context):
                 course_splits = [row + [{}] * (max_row_length - len(row)) for row in course_splits]
 
                 splits.append(course_splits)
-
-            def split_key(obj):
-                return obj.get('split', float('inf'))  # Use float('inf') if 'split' key is missing
-
-            def cumul_key(obj):
-                return obj.get('cumulative', float('inf'))  # Use float('inf') if 'cumul' key is missing
 
             sorted_split_runners = []
             sorted_cumul_runners = []
